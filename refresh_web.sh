@@ -1,7 +1,25 @@
 #!/bin/bash
 
-current_absolute_path="$(cd "$(dirname "$1")" && pwd)/$(basename "$1")"
-web_source_dir="$current_absolute_path/"
+# 获取当前脚本所在绝对路径（支持符号链接）
+script_path="${BASH_SOURCE[0]:-$0}"
+# 如果是符号链接，尝试解析（优先使用 readlink -f）
+if [ -L "$script_path" ]; then
+    if command -v readlink >/dev/null 2>&1; then
+        script_path="$(readlink -f "$script_path")"
+    else
+        # 备选解析，处理相对/绝对链接
+        while [ -L "$script_path" ]; do
+            link="$(readlink "$script_path")"
+            case "$link" in
+                /*) script_path="$link" ;;
+                *) script_path="$(dirname "$script_path")/$link" ;;
+            esac
+        done
+    fi
+fi
+current_absolute_path="$(cd "$(dirname "$script_path")" && pwd)"
+web_source_dir="$current_absolute_path"
+echo "Current absolute path: $current_absolute_path"
 
 function rebuild_web() {
     echo "Rebuilding web assets..."
@@ -147,7 +165,7 @@ else
     echo "No updates found. Skipping artifact refresh."
 fi
 soft_link_targets
-source_update=true
+source_update=false
 if ! refresh_web_source || ! refresh_target_source; then
     source_update=true
 fi
