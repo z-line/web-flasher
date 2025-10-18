@@ -14,6 +14,15 @@ import SerialFlash from "./pages/SerialFlash.vue";
 import STLinkFlash from "./pages/STLinkFlash.vue";
 
 import ReloadPrompt from './components/ReloadPrompt.vue';
+import { ref, onMounted } from 'vue';
+
+const oemDisplayName = ref('')
+
+onMounted(async () => {
+  const res = await fetch('/config.json')
+  const data = await res.json()
+  oemDisplayName.value = data.oem_display_name
+})
 
 function stepPrev() {
   if (store.currentStep === 1) {
@@ -50,8 +59,8 @@ function disableNext() {
         </div>
 
         <div class="header-main">
-          <h1>ExpressLRS</h1>
-          <h2>WEB FLASHER</h2>
+          <h1>ExpressLRS OEM for {{ oemDisplayName }}</h1>
+          <h2>WEB FLASHER - BAYCKRC</h2>
         </div>
 
         <div class="text-subtitle-2 position-absolute right-0 bottom-0">

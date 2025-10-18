@@ -52,17 +52,33 @@ watchPostEffect(() => {
   if (store.version) {
     store.folder = `./assets/${store.firmware}`
 
-    fetch(`./assets/${store.firmware}/hardware/targets.json`).then(r => r.json()).then(r => {
-      hardware.value = r
+    Promise.all([
+      fetch(`./assets/${store.firmware}/hardware/targets.json`).then(r => r.json()).catch(() => null),
+      fetch(`./config.json`).then(r => r.json()).catch(() => null),
+    ]).then(([targetsJson, configJson]) => {
+      hardware.value = targetsJson || {}
+      const oemName = configJson && configJson.oem_expresslrs_name ? configJson.oem_expresslrs_name : null
+
       store.vendor = null
       vendors.value = []
       for (const [k, v] of Object.entries(hardware.value)) {
         let hasTargets = false;
         Object.keys(v).forEach(type => hasTargets |= type.startsWith(store.targetType))
-        if (hasTargets && v.name) vendors.value.push({title: v.name, value: k})
+        if (hasTargets && v.name) {
+          let include = true
+          if (oemName) {
+            if (Array.isArray(oemName)) {
+              include = oemName.length <= 0 || oemName.includes(v.name)
+            } else {
+              include = v.name === oemName
+            }
+          }
+          if (include) vendors.value.push({title: v.name, value: k})
+        }
       }
       vendors.value.sort((a, b) => a.title.localeCompare(b.title))
-    }).catch((_ignore) => {
+    }).catch(() => {
+      // ignore fetch errors
     })
   }
 })
