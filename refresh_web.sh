@@ -127,6 +127,9 @@ function deploy(){
         config_filename=$(basename "$config_file")
         config_name="${config_filename%.json}"
         target_dir="$web_source_dir/../$config_name"
+        if [ -d "$target_dir" ]; then
+            rm -rf "$target_dir"
+        fi
         mkdir -p "$target_dir"
         cp -r "$dist_dir/"* "$target_dir/"
         cp "$config_file" "$target_dir/config.json"
