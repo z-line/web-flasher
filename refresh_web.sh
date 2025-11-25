@@ -154,6 +154,25 @@ function deploy(){
         cp -r "$dist_dir/"* "$target_dir/"
         cp "$config_file" "$target_dir/config.json"
         echo "Deployed to $target_dir"
+        
+        # 创建ExpressLRSTargets软链接
+        firmware_dir="$target_dir/assets/firmware"
+        if [ -d "$firmware_dir" ]; then
+            cd "$firmware_dir" || continue
+            for dir in */; do
+                # 如果当前目录名为hardware则跳过
+                if [ "$dir" == "hardware/" ]; then
+                    continue
+                fi
+                rm -rf "$dir/hardware"
+                ln -s "$web_source_dir/../ExpressLRSTargets" "$dir/hardware"
+                echo "Linked hardware for $dir in $config_name"
+            done
+            # 如果存在hardware目录，删除后创建软链接
+            rm -rf hardware
+            ln -s "$web_source_dir/../ExpressLRSTargets" hardware
+            cd - > /dev/null || return
+        fi
     done
     echo "Web assets deployed."
 }
