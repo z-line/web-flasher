@@ -77,7 +77,6 @@ function check_elrs_backpack(){
 function refresh_web_source() {
     echo "Refreshing web source files..."
     cd "$web_source_dir" || exit
-    git checkout oem
     git_pull_output="$(git pull 2>&1)"
     git_status=$?
     echo "$git_pull_output"
@@ -98,8 +97,11 @@ function refresh_web_source() {
 
 function refresh_target_source(){
     echo "Refreshing target source files..."
+    if ! [ -d "$web_source_dir/../ExpressLRSTargets" ]; then
+        echo "ExpressLRSTargets directory not found. Cloning repository..."
+        git clone https://github.com/z-line/targets.git "$web_source_dir/../ExpressLRSTargets"
+    fi
     cd "$web_source_dir/../ExpressLRSTargets" || exit
-    git checkout dev
     git_pull_output="$(git pull 2>&1)"
     git_status=$?
     echo "$git_pull_output"
@@ -128,7 +130,7 @@ function soft_link_targets(){
         fi
         rm -rf "$dir/hardware"
         ln -s "$web_source_dir/../ExpressLRSTargets" "$dir/hardware"
-        echo "Linked hardware for $dir"
+        echo "Linked hardware for $dir, $web_source_dir/../ExpressLRSTargets -> $dir/hardware"
     done
     # 如果存在hardware目录，删除后创建软链接
     rm -rf hardware
