@@ -15,9 +15,7 @@ function setFirmware(firmware, targetType) {
 <template>
   <div class="containerMain">
     <div class="containerHeader">
-      <VCardTitle>Main RC Firmware
-        <a data-v-760cf8b0="" href="https://space.bilibili.com/479855186/channel/series" target="_blank" title="在新标签打开">视频教程点此</a>
-      </VCardTitle>
+      <VCardTitle>Main RC Firmware</VCardTitle>
       <VCardSubtitle>Controlled or controlling... we got you covered!</VCardSubtitle>
     </div>
     <VRow>
