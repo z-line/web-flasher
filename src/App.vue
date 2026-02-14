@@ -70,8 +70,8 @@ store.options.flashMethod = urlParams.get('method');
         </div>
 
         <div class="header-main">
-          <h1>ExpressLRS OEM for {{ oemDisplayName }}</h1>
-          <h2>WEB FLASHER - BAYCKRC</h2>
+          <h1>ExpressLRS{{ oemDisplayName === '' ? '' : ' OEM for ' + oemDisplayName }}</h1>
+          <h2>WEB FLASHER{{ oemDisplayName === '' ? '' : ' - BAYCKRC' }}</h2>
         </div>
 
         <div class="text-subtitle-2 position-absolute right-0 bottom-0">

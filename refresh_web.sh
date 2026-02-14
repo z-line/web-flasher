@@ -1,32 +1,33 @@
 #!/bin/bash
 
-# 获取当前脚本所在绝对路径（支持符号链接）
-script_path="${BASH_SOURCE[0]:-$0}"
-# 如果是符号链接，尝试解析（优先使用 readlink -f）
-if [ -L "$script_path" ]; then
-    if command -v readlink >/dev/null 2>&1; then
-        script_path="$(readlink -f "$script_path")"
-    else
-        # 备选解析，处理相对/绝对链接
-        while [ -L "$script_path" ]; do
-            link="$(readlink "$script_path")"
-            case "$link" in
-                /*) script_path="$link" ;;
-                *) script_path="$(dirname "$script_path")/$link" ;;
-            esac
-        done
-    fi
+# 获取脚本实际所在目录的绝对路径（支持符号链接）
+if command -v readlink >/dev/null 2>&1 && readlink -f "${BASH_SOURCE[0]}" >/dev/null 2>&1; then
+    # Linux/Unix with readlink -f support
+    current_absolute_path="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+else
+    # Fallback for systems without readlink -f (e.g., macOS)
+    script_path="${BASH_SOURCE[0]:-$0}"
+    while [ -L "$script_path" ]; do
+        dir="$(dirname "$script_path")"
+        script_path="$(readlink "$script_path")"
+        case "$script_path" in
+            /*) ;;
+            *) script_path="$dir/$script_path" ;;
+        esac
+    done
+    current_absolute_path="$(cd "$(dirname "$script_path")" && pwd)"
 fi
-current_absolute_path="$(cd "$(dirname "$script_path")" && pwd)"
+
 web_source_dir="$current_absolute_path"
-echo "Current absolute path: $current_absolute_path"
+targets_dir="$(dirname "$current_absolute_path")/ExpressLRSTargets"
+echo "Script directory: $current_absolute_path"
+echo "Targets directory: $targets_dir"
 
 function rebuild_web() {
     echo "Rebuilding web assets..."
     cd "$web_source_dir" || exit
     npm install
     npm run build
-    cd ..
     echo "Web assets rebuilt."
 }
 
@@ -91,17 +92,16 @@ function refresh_web_source() {
         echo "Web source updated."
         return 1
     fi
-    cd ..
     echo "Web source files refreshed."
 }
 
 function refresh_target_source(){
     echo "Refreshing target source files..."
-    if ! [ -d "$web_source_dir/../ExpressLRSTargets" ]; then
+    if ! [ -d "$targets_dir" ]; then
         echo "ExpressLRSTargets directory not found. Cloning repository..."
-        git clone https://github.com/z-line/targets.git "$web_source_dir/../ExpressLRSTargets"
+        git clone https://github.com/z-line/targets.git "$targets_dir"
     fi
-    cd "$web_source_dir/../ExpressLRSTargets" || exit
+    cd "$targets_dir" || exit
     git_pull_output="$(git pull 2>&1)"
     git_status=$?
     echo "$git_pull_output"
@@ -115,27 +115,26 @@ function refresh_target_source(){
         echo "Target source updated."
         return 1
     fi
-    cd ..
     echo "Target source files refreshed."
 }
 
 function soft_link_targets(){
     echo "Creating soft links for target source..."
-    # 遍历"$web_source_dir/public/firmware"目录下的所有文件夹，将目录下hardware替换为$web_source_dir/../ExpressLRSTargets的软链接
-    cd "$web_source_dir/public/assets/firmware" || exit
+    # 遍历"$web_source_dir/public/firmware"目录下的所有文件夹，将目录下hardware替换为ExpressLRSTargets的软链接
+    firmware_assets_dir="$web_source_dir/public/assets/firmware"
+    cd "$firmware_assets_dir" || exit
     for dir in */; do
         # 如果当前目录名为hardware则跳过
         if [ "$dir" == "hardware/" ]; then
             continue
         fi
         rm -rf "$dir/hardware"
-        ln -s "$web_source_dir/../ExpressLRSTargets" "$dir/hardware"
-        echo "Linked hardware for $dir, $web_source_dir/../ExpressLRSTargets -> $dir/hardware"
+        ln -s "$targets_dir" "$dir/hardware"
+        echo "Linked hardware for $dir, $targets_dir -> $dir/hardware"
     done
     # 如果存在hardware目录，删除后创建软链接
     rm -rf hardware
-    ln -s "$web_source_dir/../ExpressLRSTargets" hardware
-    cd ..
+    ln -s "$targets_dir" hardware
 }
 
 function deploy(){
@@ -146,7 +145,7 @@ function deploy(){
         [ -e "$config_file" ] || continue
         config_filename=$(basename "$config_file")
         config_name="${config_filename%.json}"
-        target_dir="$web_source_dir/../$config_name"
+        target_dir="$(dirname "$web_source_dir")/$config_name"
         if [ -d "$target_dir" ]; then
             rm -rf "$target_dir"
         fi
@@ -165,12 +164,12 @@ function deploy(){
                     continue
                 fi
                 rm -rf "$dir/hardware"
-                ln -s "$web_source_dir/../ExpressLRSTargets" "$dir/hardware"
+                ln -s "$targets_dir" "$dir/hardware"
                 echo "Linked hardware for $dir in $config_name"
             done
             # 如果存在hardware目录，删除后创建软链接
             rm -rf hardware
-            ln -s "$web_source_dir/../ExpressLRSTargets" hardware
+            ln -s "$targets_dir" hardware
             cd - > /dev/null || return
         fi
     done
@@ -180,7 +179,7 @@ function deploy(){
 elrs_firmware_update=false
 if ! check_elrs_firmware || ! check_elrs_backpack; then
     echo "Refreshing artifacts..."
-    ./get_artifacts.sh
+    "$web_source_dir/get_artifacts.sh"
     elrs_firmware_update=true
 else
     echo "No updates found. Skipping artifact refresh."

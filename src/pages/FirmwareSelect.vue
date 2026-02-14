@@ -4,6 +4,14 @@ import HoverCard from '../components/HoverCard.vue';
 
 const emit = defineEmits(['onClick']);
 
+const oemDisplayName = ref('')
+
+onMounted(async () => {
+  const res = await fetch('/config.json')
+  const data = await res.json()
+  oemDisplayName.value = data.oem_display_name
+})
+
 // Set firmware and targetType in state store, then update page to pages selection page
 function setFirmware(firmware, targetType) {
   store.firmware = firmware;
@@ -16,7 +24,7 @@ function setFirmware(firmware, targetType) {
   <div class="containerMain">
     <div class="containerHeader">
       <VCardTitle>Main RC Firmware
-        <a data-v-760cf8b0="" href="https://space.bilibili.com/479855186/channel/series" target="_blank" title="在新标签打开">视频教程点此</a>
+        <a v-if="oemDisplayName!==''" data-v-760cf8b0="" href="https://space.bilibili.com/479855186/channel/series" target="_blank" title="在新标签打开">视频教程点此</a>
       </VCardTitle>
       <VCardSubtitle>Controlled or controlling... we got you covered!</VCardSubtitle>
     </div>
