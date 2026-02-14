@@ -1,6 +1,7 @@
 <script setup>
 import {store} from '../js/state';
 import HoverCard from '../components/HoverCard.vue';
+import {onMounted, ref} from 'vue';
 
 const emit = defineEmits(['onClick']);
 
