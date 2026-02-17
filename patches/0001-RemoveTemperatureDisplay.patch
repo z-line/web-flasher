@@ -1,0 +1,26 @@
+diff --git a/src/lib/SCREEN/TFT/tftdisplay.cpp b/src/lib/SCREEN/TFT/tftdisplay.cpp
+index ce03ec2f..9790171c 100644
+--- a/src/lib/SCREEN/TFT/tftdisplay.cpp
++++ b/src/lib/SCREEN/TFT/tftdisplay.cpp
+@@ -206,7 +206,7 @@ void TFTDisplay::displayIdleScreen(uint8_t changed, uint8_t rate_index, uint8_t
+         // Update the temperature
+         char buffer[20];
+         // \367 = (char)247 = degree symbol
+-        snprintf(buffer, sizeof(buffer), "%.6s %02d\367C", version, temperature);
++        snprintf(buffer, sizeof(buffer), "%.6s", version);
+         displayFontCenter(0, SCREEN_X/2, SCREEN_LARGE_ICON_SIZE + (SCREEN_Y - SCREEN_LARGE_ICON_SIZE - SCREEN_SMALL_FONT_SIZE)/2,
+                             SCREEN_SMALL_FONT_SIZE, SCREEN_SMALL_FONT,
+                             String(buffer), WHITE, elrs_banner_bgColor[message_index]);
+diff --git a/src/user_defines.txt b/src/user_defines.txt
+index c74dda4f..33c911be 100644
+--- a/src/user_defines.txt
++++ b/src/user_defines.txt
+@@ -24,7 +24,7 @@
+ #-DRegulatory_Domain_EU_433
+ #-DRegulatory_Domain_US_433
+ #-DRegulatory_Domain_US_433_WIDE
+-#-DRegulatory_Domain_FCC_915
++-DRegulatory_Domain_FCC_915
+ #-DRegulatory_Domain_ISM_2400
+ #-DRegulatory_Domain_EU_CE_2400
+ 
