@@ -18,16 +18,21 @@ import re
 import time
 
 
-def run(cmd, cwd=None, capture=False, check=False):
+def run(cmd, cwd=None, capture=False, check=False, stdin=None):
     if capture:
         res = subprocess.run(
-            cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+            cmd,
+            cwd=cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            stdin=stdin,
         )
         if check and res.returncode != 0:
             raise subprocess.CalledProcessError(res.returncode, cmd, res.stdout)
         return res.returncode, res.stdout
     else:
-        return subprocess.run(cmd, cwd=cwd).returncode, None
+        return subprocess.run(cmd, cwd=cwd, stdin=stdin).returncode, None
 
 
 HERE = Path(__file__).resolve().parent
@@ -99,7 +104,7 @@ class FirmwareType(Enum):
         return f"https://artifactory.expresslrs.org/{self.url_path}/index.json"
 
 
-def get_artifacts(firmware_type: FirmwareType) -> bool:
+def get_artifacts(firmware_type: FirmwareType) -> tuple[bool, list[tuple[str, str]]]:
     """Download and extract firmware artifacts for a specific firmware type.
 
     Args:
@@ -121,13 +126,13 @@ def get_artifacts(firmware_type: FirmwareType) -> bool:
     print(f"Downloading {firmware_type.display_name} index...")
     if not fetch_url_to(index_path, index_url):
         print(f"Failed to download {firmware_type.display_name} index")
-        return False
+        return (False, [])
 
     # Parse index and check if all tags exist with content
     with open(index_path, "r", encoding="utf-8") as f:
         idx = json.load(f)
 
-    tag_items = []
+    tag_items: list[tuple[str, str]] = []
     # Collect tags and branches from index (tag_name -> commit_hash)
     for k in ("tags", "branches"):
         v = idx.get(k)
@@ -217,7 +222,7 @@ def get_artifacts(firmware_type: FirmwareType) -> bool:
                 except zipfile.BadZipFile:
                     print("Bad hardware.zip")
 
-    return True
+    return (True, tag_items)
 
 
 def refresh_web_source():
@@ -254,7 +259,10 @@ def is_valid_version_tag(tag: str) -> bool:
     return bool(re.match(pattern, tag))
 
 
-def firmware_overlay():
+def firmware_overlay(tags_map: list[tuple[str, str]]):
+    # Convert list of tuples to dictionary for lookup
+    tags_dict = dict(tags_map)
+
     repo_url = "https://github.com/ExpressLRS/ExpressLRS.git"
     repo_dir = WEB_SOURCE_DIR / "ExpressLRS"
     if not repo_dir.exists():
@@ -275,11 +283,22 @@ def firmware_overlay():
     tags = [t.strip() for t in tag_out.splitlines() if t.strip()]
     to_build = []
     for tag in tags:
-        if is_valid_version_tag(tag):
-            to_build.append(tag)
+        if not is_valid_version_tag(tag):
+            continue
+
+        # Parse version and filter >= 3.6.0
+        version_str = tag.lstrip("v")
+        parts = version_str.split(".")
+        try:
+            major, minor, patch = int(parts[0]), int(parts[1]), int(parts[2])
+            # Only include versions >= 3.6.0
+            if (major, minor, patch) >= (3, 6, 0):
+                to_build.append(tag)
+        except (ValueError, IndexError):
+            continue
 
     if not to_build:
-        print("No valid tags to build (format: X.Y.Z)")
+        print("No valid tags to build >= 3.6.0 (format: X.Y.Z)")
         return False
 
     pio_envs = ["Unified_ESP32_LR1121_TX_via_ETX"]
@@ -288,14 +307,25 @@ def firmware_overlay():
         ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(repo_dir), capture=True
     )
     orig_branch = orig_branch.strip()
+    
+    # build with platformio
+    pio_bin = shutil.which("pio") or shutil.which("platformio")
+    if not pio_bin:
+        print("PlatformIO not found; skipping builds")
+
+    # Install/update PlatformIO packages
+    print("Installing PlatformIO packages...")
+    run([pio_bin, "pkg", "install", "--platform", "native"], cwd=str(repo_dir / "src"))
+    run([pio_bin, "pkg", "update"], cwd=str(repo_dir / "src"))
 
     for tag in to_build:
         print(f"Building tag {tag}")
-        
+
         # Clean working directory before checkout
         run(["git", "reset", "--hard"], cwd=str(repo_dir))
         run(["git", "clean", "-fd"], cwd=str(repo_dir))
-        
+        run(["git", "checkout", orig_branch], cwd=str(repo_dir))
+
         # Checkout tag directly (not as branch)
         code, _ = run(["git", "checkout", tag], cwd=str(repo_dir))
         if code != 0:
@@ -316,32 +346,74 @@ def firmware_overlay():
                         capture=True,
                     )
 
-        # build with platformio
-        pio_bin = shutil.which("pio") or shutil.which("platformio")
-        if not pio_bin:
-            print("PlatformIO not found; skipping builds")
-            run(["git", "checkout", orig_branch], cwd=str(repo_dir))
-            continue
-
         for env in pio_envs:
-            print(f"Running build for env {env}")
-            code, _ = run([pio_bin, "run", "-e", env], cwd=str(repo_dir))
-            if code != 0:
-                print(f"Build failed for {env} (tag {tag})")
-                continue
-            build_dir = repo_dir / ".pio" / "build" / env
-            if not build_dir.exists():
-                print("No build dir found")
-                continue
-            dest = FirmwareType.EXPRESSLRS.get_local_dir(WEB_SOURCE_DIR) / tag / env
-            dest.mkdir(parents=True, exist_ok=True)
-            copied = False
-            for ext in ("*.bin", "*.elf", "*.hex", "*.zip"):
-                for f in build_dir.glob(ext):
-                    shutil.copy2(f, dest)
-                    copied = True
-            if copied:
-                print(f"Copied artifacts for {tag}/{env} -> {dest}")
+            print(f"Building for env {env}")
+            
+            # Remove _via_* suffix to get clean target name
+            target_name = env.split("_via_")[0]
+            
+            # Determine build configurations based on target type
+            builds = []
+            if "2400" in env or env.startswith("FM30"):
+                # 2400MHz targets
+                builds = [
+                    ("LBT", "-DRegulatory_Domain_EU_CE_2400"),
+                    ("FCC", "-DRegulatory_Domain_ISM_2400"),
+                ]
+            elif "LR1121" in env:
+                # LR1121 targets
+                builds = [
+                    ("LBT", "-DRegulatory_Domain_EU_CE_2400 -DRegulatory_Domain_FCC_915"),
+                    ("FCC", "-DRegulatory_Domain_FCC_915"),
+                ]
+            else:
+                # Other targets (915MHz, etc.)
+                builds = [
+                    ("FCC", "-DRegulatory_Domain_FCC_915"),
+                ]
+
+            # Run builds with different regulatory domains
+            for region, build_flags in builds:
+                print(f"  Building {env} for {region} region...")
+                
+                # Set build flags via environment variable
+                env_vars = os.environ.copy()
+                env_vars["PLATFORMIO_BUILD_FLAGS"] = build_flags
+                
+                # Run PlatformIO build
+                result = subprocess.run(
+                    [pio_bin, "run", "-e", env],
+                    cwd=str(repo_dir / "src"),
+                    env=env_vars,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True
+                )
+                
+                if result.returncode != 0:
+                    print(f"    Build failed for {env} ({region})")
+                    continue
+                
+                # Define source and destination directories
+                build_dir = repo_dir / "src" / ".pio" / "build" / env
+                dest_dir = (
+                    FirmwareType.EXPRESSLRS.get_local_dir(WEB_SOURCE_DIR)
+                    / tags_dict[tag]
+                    / region
+                    / target_name
+                )
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Move artifacts (.elrs and .bin files)
+                copied = False
+                for ext in ("*.elrs", "*.bin"):
+                    for f in build_dir.glob(ext):
+                        shutil.move(str(f), str(dest_dir / f.name))
+                        copied = True
+                
+                if copied:
+                    print(f"    Moved artifacts to {dest_dir}")
 
     # Return to original branch and clean up
     run(["git", "reset", "--hard"], cwd=str(repo_dir))
@@ -439,16 +511,20 @@ def rebuild_web():
 
 def main():
     firmware_update = False
+    expressLRS_tag = []
     # Check and download firmware for all types
     for firmware_type in FirmwareType:
         print(f"Checking {firmware_type.display_name} artifacts...")
-        if get_artifacts(firmware_type):
+        ret, tags = get_artifacts(firmware_type)
+        if ret:
             firmware_update = True
+            if firmware_type == FirmwareType.EXPRESSLRS:
+                expressLRS_tag = tags
     if not firmware_update:
         print("No firmware updates found.")
     soft_link_targets()
     source_update = False
-    firmware_changed = firmware_overlay()
+    firmware_changed = firmware_overlay(expressLRS_tag)
     web_changed = refresh_web_source()
     targets_changed = refresh_target_source()
     if web_changed or targets_changed:
