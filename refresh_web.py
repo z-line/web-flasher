@@ -104,18 +104,23 @@ class FirmwareType(Enum):
         return f"https://artifactory.expresslrs.org/{self.url_path}/index.json"
 
 
-def get_artifacts(firmware_type: FirmwareType) -> tuple[bool, list[tuple[str, str]]]:
+def get_artifacts(firmware_type: FirmwareType) -> tuple[bool, list[tuple[str, str]], list[str]]:
     """Download and extract firmware artifacts for a specific firmware type.
 
     Args:
         firmware_type: Type of firmware to download (EXPRESSLRS or BACKPACK)
 
     Returns:
-        True if updates were downloaded, False if already up-to-date or failed
+        Tuple of (changed, all_tags, new_tags):
+        - changed: True if updates were downloaded
+        - all_tags: List of all (tag_name, commit_hash) pairs
+        - new_tags: List of tag names that were newly downloaded
     """
     assets = WEB_SOURCE_DIR / "public" / "assets"
     dest_dir = assets / firmware_type.dir_name
     dest_dir.mkdir(parents=True, exist_ok=True)
+    changed = False
+    new_tags = []  # Track newly downloaded tags
 
     # Download and parse index
     index_url = (
@@ -126,7 +131,7 @@ def get_artifacts(firmware_type: FirmwareType) -> tuple[bool, list[tuple[str, st
     print(f"Downloading {firmware_type.display_name} index...")
     if not fetch_url_to(index_path, index_url):
         print(f"Failed to download {firmware_type.display_name} index")
-        return (False, [])
+        return (False, [], [])
 
     # Parse index and check if all tags exist with content
     with open(index_path, "r", encoding="utf-8") as f:
@@ -184,7 +189,8 @@ def get_artifacts(firmware_type: FirmwareType) -> tuple[bool, list[tuple[str, st
             tmpzip = Path(td) / "firmware.zip"
             if not fetch_url_to(tmpzip, zip_url):
                 continue
-
+            changed = True
+            new_tags.append(tag_name)  # Track this tag as newly downloaded
             hash_dest.mkdir(parents=True, exist_ok=True)
             try:
                 with zipfile.ZipFile(tmpzip, "r") as z:
@@ -197,32 +203,7 @@ def get_artifacts(firmware_type: FirmwareType) -> tuple[bool, list[tuple[str, st
                     shutil.rmtree(sub)
             except zipfile.BadZipFile:
                 print(f"Bad zip from {zip_url}")
-
-    # Download hardware targets only for ExpressLRS firmware
-    if firmware_type == FirmwareType.EXPRESSLRS:
-        hw_url = "https://artifactory.expresslrs.org/ExpressLRS/hardware.zip"
-        hw_dir = dest_dir / "hardware"
-        print("Downloading hardware targets...")
-
-        with tempfile.TemporaryDirectory() as td:
-            tmpzip = Path(td) / "hardware.zip"
-            if fetch_url_to(tmpzip, hw_url):
-                # Remove old hardware and replace with new
-                if hw_dir.exists() or hw_dir.is_symlink():
-                    if hw_dir.is_symlink():
-                        hw_dir.unlink()
-                    elif hw_dir.is_dir():
-                        shutil.rmtree(hw_dir)
-                    else:
-                        hw_dir.unlink()
-                hw_dir.mkdir(parents=True, exist_ok=True)
-                try:
-                    with zipfile.ZipFile(tmpzip, "r") as z:
-                        z.extractall(hw_dir)
-                except zipfile.BadZipFile:
-                    print("Bad hardware.zip")
-
-    return (True, tag_items)
+    return (changed, tag_items, new_tags)
 
 
 def refresh_web_source():
@@ -259,9 +240,20 @@ def is_valid_version_tag(tag: str) -> bool:
     return bool(re.match(pattern, tag))
 
 
-def firmware_overlay(tags_map: list[tuple[str, str]]):
+def firmware_overlay(tags_map: list[tuple[str, str]], new_tags: list[str]):
+    """Build firmware only for newly downloaded tags.
+    
+    Args:
+        tags_map: List of all (tag_name, commit_hash) pairs
+        new_tags: List of tag names that were newly downloaded and need to be built
+    """
     # Convert list of tuples to dictionary for lookup
     tags_dict = dict(tags_map)
+    
+    # If no new tags to build, skip
+    if not new_tags:
+        print("No new tags to build")
+        return False
 
     repo_url = "https://github.com/ExpressLRS/ExpressLRS.git"
     repo_dir = WEB_SOURCE_DIR / "ExpressLRS"
@@ -276,13 +268,9 @@ def firmware_overlay(tags_map: list[tuple[str, str]]):
     code, out = run(["git", "pull"], cwd=str(repo_dir), capture=True)
     print(out)
 
-    # list tags
-    code, tag_out = run(
-        ["git", "tag", "-l", "--sort=v:refname"], cwd=str(repo_dir), capture=True
-    )
-    tags = [t.strip() for t in tag_out.splitlines() if t.strip()]
+    # Filter new_tags to only include valid version tags >= 3.6.0
     to_build = []
-    for tag in tags:
+    for tag in new_tags:
         if not is_valid_version_tag(tag):
             continue
 
@@ -298,8 +286,10 @@ def firmware_overlay(tags_map: list[tuple[str, str]]):
             continue
 
     if not to_build:
-        print("No valid tags to build >= 3.6.0 (format: X.Y.Z)")
+        print("No new tags to build (either no new tags or all < 3.6.0)")
         return False
+    
+    print(f"Building {len(to_build)} new tag(s): {', '.join(to_build)}")
 
     pio_envs = ["Unified_ESP32_LR1121_TX_via_ETX"]
 
@@ -307,7 +297,7 @@ def firmware_overlay(tags_map: list[tuple[str, str]]):
         ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=str(repo_dir), capture=True
     )
     orig_branch = orig_branch.strip()
-    
+
     # build with platformio
     pio_bin = shutil.which("pio") or shutil.which("platformio")
     if not pio_bin:
@@ -348,10 +338,10 @@ def firmware_overlay(tags_map: list[tuple[str, str]]):
 
         for env in pio_envs:
             print(f"Building for env {env}")
-            
+
             # Remove _via_* suffix to get clean target name
             target_name = env.split("_via_")[0]
-            
+
             # Determine build configurations based on target type
             builds = []
             if "2400" in env or env.startswith("FM30"):
@@ -363,7 +353,10 @@ def firmware_overlay(tags_map: list[tuple[str, str]]):
             elif "LR1121" in env:
                 # LR1121 targets
                 builds = [
-                    ("LBT", "-DRegulatory_Domain_EU_CE_2400 -DRegulatory_Domain_FCC_915"),
+                    (
+                        "LBT",
+                        "-DRegulatory_Domain_EU_CE_2400 -DRegulatory_Domain_FCC_915",
+                    ),
                     ("FCC", "-DRegulatory_Domain_FCC_915"),
                 ]
             else:
@@ -375,11 +368,11 @@ def firmware_overlay(tags_map: list[tuple[str, str]]):
             # Run builds with different regulatory domains
             for region, build_flags in builds:
                 print(f"  Building {env} for {region} region...")
-                
+
                 # Set build flags via environment variable
                 env_vars = os.environ.copy()
                 env_vars["PLATFORMIO_BUILD_FLAGS"] = build_flags
-                
+
                 # Run PlatformIO build
                 result = subprocess.run(
                     [pio_bin, "run", "-e", env],
@@ -388,13 +381,13 @@ def firmware_overlay(tags_map: list[tuple[str, str]]):
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
-                    text=True
+                    text=True,
                 )
-                
+
                 if result.returncode != 0:
                     print(f"    Build failed for {env} ({region})")
                     continue
-                
+
                 # Define source and destination directories
                 build_dir = repo_dir / "src" / ".pio" / "build" / env
                 dest_dir = (
@@ -404,14 +397,14 @@ def firmware_overlay(tags_map: list[tuple[str, str]]):
                     / target_name
                 )
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                
+
                 # Move artifacts (.elrs and .bin files)
                 copied = False
                 for ext in ("*.elrs", "*.bin"):
                     for f in build_dir.glob(ext):
                         shutil.move(str(f), str(dest_dir / f.name))
                         copied = True
-                
+
                 if copied:
                     print(f"    Moved artifacts to {dest_dir}")
 
@@ -511,20 +504,23 @@ def rebuild_web():
 
 def main():
     firmware_update = False
-    expressLRS_tag = []
+    expressLRS_status = (False, list[tuple[str, str]](), list[str]())
     # Check and download firmware for all types
     for firmware_type in FirmwareType:
         print(f"Checking {firmware_type.display_name} artifacts...")
-        ret, tags = get_artifacts(firmware_type)
-        if ret:
+        artifacts_ret = get_artifacts(firmware_type)
+        if artifacts_ret[0]:
             firmware_update = True
             if firmware_type == FirmwareType.EXPRESSLRS:
-                expressLRS_tag = tags
+                expressLRS_status = artifacts_ret
     if not firmware_update:
         print("No firmware updates found.")
     soft_link_targets()
     source_update = False
-    firmware_changed = firmware_overlay(expressLRS_tag)
+    # Only build firmware overlay if there are new ExpressLRS tags
+    firmware_changed = (
+        False if not expressLRS_status[0] else firmware_overlay(expressLRS_status[1], expressLRS_status[2])
+    )
     web_changed = refresh_web_source()
     targets_changed = refresh_target_source()
     if web_changed or targets_changed:
