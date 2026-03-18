@@ -104,7 +104,9 @@ class FirmwareType(Enum):
         return f"https://artifactory.expresslrs.org/{self.url_path}/index.json"
 
 
-def get_artifacts(firmware_type: FirmwareType) -> tuple[bool, list[tuple[str, str]], list[str]]:
+def get_artifacts(
+    firmware_type: FirmwareType,
+) -> tuple[bool, list[tuple[str, str]], list[str]]:
     """Download and extract firmware artifacts for a specific firmware type.
 
     Args:
@@ -242,14 +244,14 @@ def is_valid_version_tag(tag: str) -> bool:
 
 def firmware_overlay(tags_map: list[tuple[str, str]], new_tags: list[str]):
     """Build firmware only for newly downloaded tags.
-    
+
     Args:
         tags_map: List of all (tag_name, commit_hash) pairs
         new_tags: List of tag names that were newly downloaded and need to be built
     """
     # Convert list of tuples to dictionary for lookup
     tags_dict = dict(tags_map)
-    
+
     # If no new tags to build, skip
     if not new_tags:
         print("No new tags to build")
@@ -288,7 +290,7 @@ def firmware_overlay(tags_map: list[tuple[str, str]], new_tags: list[str]):
     if not to_build:
         print("No new tags to build (either no new tags or all < 3.6.0)")
         return False
-    
+
     print(f"Building {len(to_build)} new tag(s): {', '.join(to_build)}")
 
     pio_envs = ["Unified_ESP32_LR1121_TX_via_ETX"]
@@ -416,41 +418,86 @@ def firmware_overlay(tags_map: list[tuple[str, str]], new_tags: list[str]):
     return True
 
 
-def soft_link_targets():
-    firmware_assets = FirmwareType.EXPRESSLRS.get_local_dir(WEB_SOURCE_DIR)
+def process_targets(type: FirmwareType):
+    firmware_assets = type.get_local_dir(WEB_SOURCE_DIR)
     if not firmware_assets.exists():
         return
-    for d in firmware_assets.iterdir():
-        if not d.is_dir():
-            continue
-        if d.name == "hardware":
-            continue
-        hw_link = d / "hardware"
+    if type == FirmwareType.EXPRESSLRS:
+        for d in firmware_assets.iterdir():
+            if not d.is_dir():
+                continue
+            if d.name == "hardware":
+                continue
+            hw_link = d / "hardware"
+            if hw_link.exists() or hw_link.is_symlink():
+                if hw_link.is_dir() and not hw_link.is_symlink():
+                    shutil.rmtree(hw_link)
+                else:
+                    try:
+                        hw_link.unlink()
+                    except Exception:
+                        pass
+            try:
+                os.symlink(str(TARGETS_DIR), str(hw_link))
+                print(f"Linked hardware for {d.name}")
+            except Exception as e:
+                print(f"Could not link for {d}: {e}")
+
+        # top-level hardware
+        top_hw = firmware_assets / "hardware"
+        if top_hw.exists():
+            if top_hw.is_symlink() or top_hw.is_file():
+                top_hw.unlink()
+            else:
+                shutil.rmtree(top_hw)
+        try:
+            os.symlink(str(TARGETS_DIR), str(top_hw))
+        except Exception as e:
+            print(f"Could not create top-level hardware symlink: {e}")
+    elif type == FirmwareType.BACKPACK:
+        index_path = type.get_index_path(WEB_SOURCE_DIR)
+        if not index_path.exists():
+            print(
+                f"Index file for {type.display_name} not found, skipping target processing"
+            )
+            return
+        with open(index_path, "r", encoding="utf-8") as f:
+            idx = json.load(f)
+        latest_commit = None
+        if "tags" in idx and isinstance(idx["tags"], dict):
+            # Assuming tags are sorted by version, get the latest one
+            sorted_tags = sorted(idx["tags"].items(), key=lambda x: x[0], reverse=True)
+            for tag_name, commit_hash in sorted_tags:
+                if is_valid_version_tag(tag_name):
+                    latest_commit = commit_hash
+                    break
+        if not latest_commit:
+            print(
+                f"No valid version tags found for {type.display_name}, skipping target processing"
+            )
+            return
+
+        hw_link = firmware_assets / "hardware"
         if hw_link.exists() or hw_link.is_symlink():
             if hw_link.is_dir() and not hw_link.is_symlink():
                 shutil.rmtree(hw_link)
             else:
                 try:
                     hw_link.unlink()
+                    print(f"Removed existing hardware link for {type.display_name}")
                 except Exception:
                     pass
-        try:
-            os.symlink(str(TARGETS_DIR), str(hw_link))
-            print(f"Linked hardware for {d.name}")
-        except Exception as e:
-            print(f"Could not link for {d}: {e}")
-
-    # top-level hardware
-    top_hw = firmware_assets / "hardware"
-    if top_hw.exists():
-        if top_hw.is_symlink() or top_hw.is_file():
-            top_hw.unlink()
-        else:
-            shutil.rmtree(top_hw)
-    try:
-        os.symlink(str(TARGETS_DIR), str(top_hw))
-    except Exception as e:
-        print(f"Could not create top-level hardware symlink: {e}")
+        target_dir = firmware_assets / latest_commit / "hardware"
+        if target_dir.exists():
+            try:
+                os.symlink(str(target_dir), str(hw_link))
+                print(
+                    f"Linked hardware for {type.display_name} to latest commit {latest_commit[:8]}"
+                )
+            except Exception as e:
+                print(f"Could not link for {type.display_name}: {e}")
+    else:
+        print(f"Unknown firmware type {type}, skipping target processing")
 
 
 def deploy():
@@ -509,18 +556,19 @@ def main():
     for firmware_type in FirmwareType:
         print(f"Checking {firmware_type.display_name} artifacts...")
         artifacts_ret = get_artifacts(firmware_type)
+        process_targets(firmware_type)
         if artifacts_ret[0]:
             firmware_update = True
             if firmware_type == FirmwareType.EXPRESSLRS:
                 expressLRS_status = artifacts_ret
     if not firmware_update:
         print("No firmware updates found.")
-    soft_link_targets()
     source_update = False
     # Only build firmware overlay if there are new ExpressLRS tags
-    firmware_changed = (
-        False if not expressLRS_status[0] else firmware_overlay(expressLRS_status[1], expressLRS_status[2])
-    )
+    # firmware_changed = (
+    #     False if not expressLRS_status[0] else firmware_overlay(expressLRS_status[1], expressLRS_status[2])
+    # )
+    firmware_changed = firmware_overlay(expressLRS_status[1], expressLRS_status[2])
     web_changed = refresh_web_source()
     targets_changed = refresh_target_source()
     if web_changed or targets_changed:
